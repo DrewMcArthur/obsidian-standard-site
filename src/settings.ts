@@ -1,10 +1,15 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type StandardSitePlugin from "./main";
-import { StandardSiteClient } from "./atproto";
+import { DEFAULT_OAUTH_LOOPBACK_PORT, getOAuthClientId, getOAuthRedirectUri, type OAuthStoreData, type StoredOAuthState } from "./atproto";
+import type { NodeSavedSession } from "@atproto/oauth-client-node";
 
-export interface StandardSiteSettings {
+export interface StandardSiteSettings extends OAuthStoreData {
 	handle: string;
-	appPassword: string;
+	oauthSessionDid: string;
+	oauthClientId: string;
+	oauthRedirectUri: string;
+	oauthLoopbackPort: number;
+	oauthAllowHttp: boolean;
 	pdsUrl: string;
 	publicationName: string;
 	publicationDescription: string;
@@ -16,7 +21,13 @@ export interface StandardSiteSettings {
 
 export const DEFAULT_SETTINGS: StandardSiteSettings = {
 	handle: "",
-	appPassword: "",
+	oauthSessionDid: "",
+	oauthClientId: "",
+	oauthRedirectUri: "",
+	oauthLoopbackPort: DEFAULT_OAUTH_LOOPBACK_PORT,
+	oauthAllowHttp: false,
+	oauthSessions: {} as Record<string, NodeSavedSession>,
+	oauthStates: {} as Record<string, StoredOAuthState>,
 	pdsUrl: "",
 	publicationName: "",
 	publicationDescription: "",
@@ -41,54 +52,110 @@ export class StandardSiteSettingTab extends PluginSettingTab {
 
 		containerEl.createEl("h2", { text: "Standard.site Publisher" });
 
-		// Auth section
 		containerEl.createEl("h3", { text: "Authentication" });
 
 		new Setting(containerEl)
 			.setName("ATProto handle")
-			.setDesc("Your handle (e.g. alice.bsky.social)")
+			.setDesc("Your handle or DID. Used as the OAuth login hint.")
 			.addText((text) =>
 				text
 					.setPlaceholder("alice.bsky.social")
 					.setValue(this.plugin.settings.handle)
 					.onChange(async (value) => {
-						this.plugin.settings.handle = value;
+						this.plugin.settings.handle = value.trim();
 						await this.plugin.saveSettings();
 					})
 			);
 
 		new Setting(containerEl)
-			.setName("App password")
-			.setDesc("Generate one at Settings → App Passwords in your ATProto client")
-			.addText((text) => {
-				text
-					.setPlaceholder("xxxx-xxxx-xxxx-xxxx")
-					.setValue(this.plugin.settings.appPassword)
-					.onChange(async (value) => {
-						this.plugin.settings.appPassword = value;
-						await this.plugin.saveSettings();
+			.setName("OAuth account")
+			.setDesc(this.plugin.settings.oauthSessionDid ? `Connected as ${this.plugin.settings.oauthSessionDid}` : "Connect with ATProto OAuth. App passwords are no longer used.")
+			.addButton((btn) =>
+				btn
+					.setButtonText(this.plugin.settings.oauthSessionDid ? "Reconnect" : "Connect")
+					.setCta()
+					.onClick(async () => {
+						try {
+							await this.plugin.connectOAuth();
+							this.display();
+						} catch (e: any) {
+							new Notice(`ATProto OAuth failed: ${e.message}`);
+							console.error("ATProto OAuth failed:", e);
+						}
+					})
+			)
+			.addButton((btn) => {
+				btn
+					.setButtonText("Disconnect")
+					.setDisabled(!this.plugin.settings.oauthSessionDid)
+					.onClick(async () => {
+						try {
+							await this.plugin.disconnectOAuth();
+							this.display();
+						} catch (e: any) {
+							new Notice(`Disconnect failed: ${e.message}`);
+							console.error("ATProto OAuth disconnect failed:", e);
+						}
 					});
-				text.inputEl.type = "password";
 			});
 
-		// Advanced Authentication Section
 		const advancedAuthDetails = containerEl.createEl("details");
-		advancedAuthDetails.createEl("summary", { text: "Advanced Settings" });
-		
+		advancedAuthDetails.createEl("summary", { text: "Advanced OAuth Settings" });
+
 		new Setting(advancedAuthDetails)
-			.setName("PDS URL")
-			.setDesc("Bypass identity resolution and use this Personal Data Server (PDS) URL instead (e.g. http://localhost:2583). Leave empty for auto-resolution.")
+			.setName("Loopback callback port")
+			.setDesc("Port used for the temporary local OAuth callback server.")
 			.addText((text) =>
 				text
-					.setPlaceholder("")
-					.setValue(this.plugin.settings.pdsUrl || "")
+					.setPlaceholder(String(DEFAULT_OAUTH_LOOPBACK_PORT))
+					.setValue(String(this.plugin.settings.oauthLoopbackPort || DEFAULT_OAUTH_LOOPBACK_PORT))
 					.onChange(async (value) => {
-						this.plugin.settings.pdsUrl = value;
+						const port = Number(value.trim());
+						this.plugin.settings.oauthLoopbackPort = Number.isFinite(port) && port > 0 ? port : DEFAULT_OAUTH_LOOPBACK_PORT;
+						this.plugin.settings.oauthRedirectUri = "";
+						this.plugin.settings.oauthClientId = "";
 						await this.plugin.saveSettings();
 					})
 			);
 
-		// Publication section
+		new Setting(advancedAuthDetails)
+			.setName("OAuth redirect URI")
+			.setDesc(`Defaults to ${getOAuthRedirectUri(this.plugin.settings)}. Leave empty unless you host custom client metadata.`)
+			.addText((text) =>
+				text
+					.setPlaceholder(getOAuthRedirectUri(this.plugin.settings))
+					.setValue(this.plugin.settings.oauthRedirectUri)
+					.onChange(async (value) => {
+						this.plugin.settings.oauthRedirectUri = value.trim();
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(advancedAuthDetails)
+			.setName("OAuth client ID")
+			.setDesc(`Defaults to the ATProto loopback client ID ${getOAuthClientId(this.plugin.settings)}.`)
+			.addText((text) =>
+				text
+					.setPlaceholder(getOAuthClientId(this.plugin.settings))
+					.setValue(this.plugin.settings.oauthClientId)
+					.onChange(async (value) => {
+						this.plugin.settings.oauthClientId = value.trim();
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(advancedAuthDetails)
+			.setName("Allow HTTP OAuth servers")
+			.setDesc("Only enable for local PDS development. Production ATProto OAuth should use HTTPS.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.oauthAllowHttp)
+					.onChange(async (value) => {
+						this.plugin.settings.oauthAllowHttp = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
 		containerEl.createEl("h3", { text: "Publication" });
 
 		this.renderPublicationPicker(containerEl);
@@ -111,7 +178,6 @@ export class StandardSiteSettingTab extends PluginSettingTab {
 					});
 			});
 
-		// Vault section
 		containerEl.createEl("h3", { text: "Vault" });
 
 		new Setting(containerEl)
@@ -139,7 +205,6 @@ export class StandardSiteSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
-
 	}
 
 	private renderPublicationPicker(containerEl: HTMLElement) {
@@ -149,27 +214,25 @@ export class StandardSiteSettingTab extends PluginSettingTab {
 
 	private renderPublicationPickerInternal(wrapper: HTMLDivElement) {
 		wrapper.empty();
-		const { handle, appPassword } = this.plugin.settings;
 
-		if (!handle || !appPassword) {
+		if (!this.plugin.settings.oauthSessionDid) {
 			new Setting(wrapper)
 				.setName("Active publication")
-				.setDesc("Set your handle and app password above to load publications.");
+				.setDesc("Connect your ATProto account above to load publications.");
 			return;
 		}
 
 		new Setting(wrapper)
 			.setName("Fetch publications")
-			.setDesc("Load your publications from the server after entering or changing credentials.")
-			.addButton((btn) => 
+			.setDesc("Load your publications from the server after connecting or reconnecting.")
+			.addButton((btn) =>
 				btn.setButtonText("Fetch").onClick(() => {
 					this.loadPublications(wrapper);
 				})
 			);
 
 		if (this.plugin.settings.publicationUri) {
-			// Show selected even if we aren't loading right now
-			const displayName = this.plugin.settings.publicationName 
+			const displayName = this.plugin.settings.publicationName
 				? `${this.plugin.settings.publicationName} (${this.plugin.settings.publicationUri})`
 				: this.plugin.settings.publicationUri;
 
@@ -182,14 +245,12 @@ export class StandardSiteSettingTab extends PluginSettingTab {
 
 	private loadPublications(wrapper: HTMLDivElement) {
 		wrapper.empty();
-		const { handle, appPassword } = this.plugin.settings;
 
-		const loadingSetting = new Setting(wrapper)
+		new Setting(wrapper)
 			.setName("Active publication")
 			.setDesc("Loading publications...");
 
-		const client = new StandardSiteClient();
-		client.login(handle, appPassword, this.plugin.settings.pdsUrl).then(async () => {
+		this.plugin.getAuthenticatedClient().then(async (client) => {
 			const publications = await client.listPublications();
 			wrapper.empty();
 
@@ -207,7 +268,6 @@ export class StandardSiteSettingTab extends PluginSettingTab {
 				if (this.plugin.settings.publicationUri) {
 					dropdown.setValue(this.plugin.settings.publicationUri);
 
-					// Auto-populate URL defensively if not already set, or if we want to ensure it's in sync.
 					const currentPub = publications.find(p => p.uri === this.plugin.settings.publicationUri);
 					if (currentPub) {
 						let updated = false;
@@ -221,7 +281,7 @@ export class StandardSiteSettingTab extends PluginSettingTab {
 							this.plugin.settings.publicationName = name;
 							updated = true;
 						}
-						
+
 						if (updated) {
 							this.plugin.saveSettings();
 						}
@@ -249,7 +309,6 @@ export class StandardSiteSettingTab extends PluginSettingTab {
 				});
 			});
 
-			// "Create new" inline fields
 			const newPubWrapper = wrapper.createDiv();
 			newPubWrapper.style.display = "none";
 
@@ -263,7 +322,10 @@ export class StandardSiteSettingTab extends PluginSettingTab {
 			new Setting(newPubWrapper)
 				.addButton((btn) =>
 					btn.setButtonText("Create publication").setCta().onClick(async () => {
-						if (!newName.trim()) return;
+						if (!newName.trim()) {
+							new Notice("Enter a publication name before creating it.");
+							return;
+						}
 						try {
 							const ref = await client.createPublication({
 								$type: "site.standard.publication",
@@ -274,8 +336,10 @@ export class StandardSiteSettingTab extends PluginSettingTab {
 							this.plugin.settings.publicationUri = ref.uri;
 							this.plugin.settings.publicationName = newName.trim();
 							await this.plugin.saveSettings();
-							this.display(); // re-render settings
+							new Notice(`Created publication: ${newName.trim()}`);
+							this.display();
 						} catch (e: any) {
+							new Notice(`Failed to create publication: ${e.message}`);
 							console.error("Failed to create publication:", e);
 						}
 					})
@@ -284,7 +348,8 @@ export class StandardSiteSettingTab extends PluginSettingTab {
 			wrapper.empty();
 			new Setting(wrapper)
 				.setName("Active publication")
-				.setDesc("Could not connect — check your handle and app password.");
+				.setDesc("Could not connect. Reconnect your ATProto account and try again.");
+			new Notice("Could not load publications. Reconnect your ATProto account and try again.");
 		});
 	}
 }

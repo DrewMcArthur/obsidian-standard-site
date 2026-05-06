@@ -15,6 +15,7 @@ Notes become `site.standard.document` records on your Personal Data Server (PDS)
 - **Document references** — cross-document `at://` URIs are stored in records so ATProto indexers can discover backlinks
 - **Frontmatter template** — command to scaffold publish frontmatter on any note
 - **Static viewer** — included single-file HTML viewer that renders your publication directly from ATProto
+- **ATProto OAuth** — authenticates with ATProto OAuth, PKCE, PAR, DPoP, and refresh tokens instead of app passwords
 
 ## Installation
 
@@ -40,12 +41,14 @@ Open the plugin settings in Obsidian and configure:
 | Setting | Description |
 |---|---|
 | **Handle** | Your ATProto handle (e.g. `alice.bsky.social`) |
-| **App Password** | An [app password](https://bsky.app/settings/app-passwords) for authentication |
+| **OAuth account** | Connect your account from the settings panel. The plugin opens the ATProto authorization flow in your browser and listens on a temporary loopback callback URL. |
 | **Base URL** | Your site URL (e.g. `https://myblog.example.com`); synced to the publication record |
 | **Publish Root** | Vault folder containing notes to publish (empty = entire vault) |
 | **Pull Folder** | Where to save pulled notes (defaults to publish root) |
 
-Select an existing publication or create a new one from the settings panel.
+After connecting OAuth, select an existing publication or create a new one from the settings panel.
+
+By default the desktop plugin uses the ATProto loopback client pattern with `http://localhost` client metadata and a `http://127.0.0.1:45231/standard-site-oauth-callback` redirect URI. It requests `atproto repo:site.standard.publication repo:site.standard.document blob:image/*` so it can manage Standard.site records and upload cover images. Advanced settings allow changing the callback port or supplying hosted client metadata if needed.
 
 ## Usage
 
@@ -118,11 +121,11 @@ The viewer works on any static host. For enhanced social sharing (per-post cards
 
 This section is provided per Obsidian's developer policies to disclose how the plugin uses network requests and handles credentials.
 
-**Network requests.** The plugin resolves your handle to discover your Personal Data Server (PDS) via the public AT Protocol API (`public.api.bsky.app`) and the PLC directory (`plc.directory`). It then connects to your PDS to publish, update, unpublish, and sync notes. All write traffic goes exclusively to your PDS.
+**Network requests.** The plugin resolves your handle and OAuth server using ATProto identity and OAuth discovery, including your PDS, authorization server metadata, and the PLC directory as needed. It opens the authorization page in your browser, listens for the OAuth callback on a local loopback HTTP server, and then connects to your PDS to publish, update, unpublish, and sync notes. Write traffic goes to your PDS.
 
-**Authentication.** An ATProto handle and app password are required. App passwords can be generated at <https://bsky.app/settings/app-passwords>. The plugin uses these credentials solely to authenticate with your PDS.
+**Authentication.** The plugin uses ATProto OAuth rather than app passwords. The OAuth SDK performs the authorization-code flow with PKCE, PAR, DPoP-bound access tokens, and refresh-token handling.
 
-**Credential storage.** Your handle and app password are stored in the plugin's `data.json` file within your vault's `.obsidian/plugins/standard-site-publisher/` directory. This is Obsidian's standard local plugin storage mechanism. Credentials are never transmitted to any service other than your PDS.
+**Credential storage.** Your handle, authorized DID, OAuth session data, refresh token, pending OAuth state, and DPoP private key material are stored in the plugin's `data.json` file within your vault's `.obsidian/plugins/standard-site-publisher/` directory. This is Obsidian's standard local plugin storage mechanism. OAuth sessions can be revoked from the plugin settings or from your ATProto account provider.
 
 **No telemetry.** The plugin does not collect analytics, telemetry, or tracking data of any kind.
 

@@ -4,7 +4,7 @@ import {
 	DEFAULT_SETTINGS,
 	type StandardSiteSettings,
 } from "./settings";
-import { StandardSiteClient } from "./atproto";
+import { StandardSiteClient, createOAuthClient, startOAuthLoginFlow } from "./atproto";
 import { prepareNoteForPublish, extractRkeyFromUri } from "./publish";
 import { computeSyncDiff, type VaultNote, type PdsRecord } from "./sync";
 import { deriveDocumentPath } from "./paths";
@@ -100,22 +100,80 @@ export default class StandardSitePlugin extends Plugin {
 			this.settings.pdsUrl = "";
 			await this.saveSettings();
 		}
+		this.settings.oauthSessions ??= {};
+		this.settings.oauthStates ??= {};
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
 	}
 
-	private async getClient(): Promise<StandardSiteClient> {
-		if (!this.settings.handle || !this.settings.appPassword) {
-			throw new Error("Please configure your ATProto handle and app password in settings");
+	async connectOAuth(): Promise<void> {
+		if (!this.settings.handle) {
+			throw new Error("Please enter your ATProto handle or DID before connecting OAuth");
+		}
+
+		const flow = await startOAuthLoginFlow(
+			this.settings.handle,
+			this.settings,
+			() => this.saveSettings(),
+			this.settings,
+		);
+
+		try {
+			window.open(flow.authorizationUrl.toString());
+		} catch (e) {
+			console.warn("Could not open OAuth authorization URL automatically; keeping callback listener active.", e);
+			console.log("ATProto OAuth authorization URL:", flow.authorizationUrl.toString());
+			new Notice("OAuth listener is active. If your browser did not open, copy the authorization URL from the developer console.");
+		}
+
+		new Notice("Complete ATProto authorization in your browser");
+		const result = await flow.finished;
+		this.settings.oauthSessionDid = result.did;
+		this.client = null;
+		await this.saveSettings();
+		new Notice("ATProto account connected");
+	}
+
+	async disconnectOAuth(): Promise<void> {
+		const did = this.settings.oauthSessionDid;
+		if (did) {
+			try {
+				const oauthClient = await createOAuthClient(this.settings, () => this.saveSettings(), this.settings);
+				await oauthClient.revoke(did);
+			} catch (e) {
+				console.warn("Failed to revoke ATProto OAuth session:", e);
+			}
+		}
+
+		this.settings.oauthSessionDid = "";
+		this.settings.oauthSessions = {};
+		this.settings.oauthStates = {};
+		this.client = null;
+		await this.saveSettings();
+		new Notice("ATProto account disconnected");
+	}
+
+	async getAuthenticatedClient(): Promise<StandardSiteClient> {
+		if (!this.settings.oauthSessionDid) {
+			throw new Error("Please connect your ATProto account with OAuth in settings");
 		}
 		if (!this.client) {
-			let client = new StandardSiteClient();
-			await client.login(this.settings.handle, this.settings.appPassword, this.settings.pdsUrl);
-			this.client = client;  // assign after successful login to avoid caching a failed client
+			const client = new StandardSiteClient();
+			await client.restoreOAuthSession(
+				this.settings.oauthSessionDid,
+				this.settings,
+				() => this.saveSettings(),
+				this.settings,
+			);
+			this.client = client;
 		}
 		return this.client;
+	}
+
+	private async getClient(): Promise<StandardSiteClient> {
+		return this.getAuthenticatedClient();
 	}
 
 	private async ensurePublication(): Promise<string> {

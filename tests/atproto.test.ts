@@ -2,33 +2,42 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { StandardSiteClient } from "../src/atproto";
 import type { DocumentRecord, PublicationRecord } from "../src/types";
 
-// Mock identity resolution
-vi.mock("../src/identity", () => ({
-	resolveIdentity: vi.fn().mockResolvedValue({
-		did: "did:plc:testuser123",
-		pds: "https://test.pds.example",
-	}),
-}));
-
-// Mock @atcute/client
 const mockRpc = {
 	get: vi.fn(),
 	post: vi.fn(),
 };
 
-const mockManager = {
-	login: vi.fn().mockResolvedValue({
-		did: "did:plc:testuser123",
-		pdsUri: "https://test.pds.example",
+const mockSession = {
+	did: "did:plc:testuser123",
+	fetchHandler: vi.fn(),
+	getTokenInfo: vi.fn().mockResolvedValue({
+		aud: "https://test.pds.example",
 	}),
-	session: {
-		did: "did:plc:testuser123",
-		pdsUri: "https://test.pds.example",
-	},
 };
 
+const mockOAuthClient = {
+	restore: vi.fn().mockResolvedValue(mockSession),
+	authorize: vi.fn(),
+	callback: vi.fn(),
+	revoke: vi.fn(),
+};
+
+vi.mock("@atproto/oauth-client-node", () => ({
+	NodeOAuthClient: vi.fn(function () { return mockOAuthClient; }),
+	buildAtprotoLoopbackClientMetadata: vi.fn(({ redirect_uris, scope }) => ({
+		client_id: `http://localhost/?redirect_uri=${encodeURIComponent(redirect_uris[0])}`,
+		redirect_uris,
+		scope,
+		response_types: ["code"],
+		grant_types: ["authorization_code", "refresh_token"],
+		token_endpoint_auth_method: "none",
+		application_type: "native",
+		dpop_bound_access_tokens: true,
+	})),
+	requestLocalLock: vi.fn(async (_key: string, fn: () => Promise<unknown>) => fn()),
+}));
+
 vi.mock("@atcute/client", () => ({
-	CredentialManager: vi.fn(function () { return mockManager; }),
 	Client: vi.fn(function () { return mockRpc; }),
 	ok: vi.fn((promise: any) => promise.then((r: any) => {
 		if (r && typeof r === "object" && "ok" in r) {
@@ -44,29 +53,10 @@ describe("StandardSiteClient", () => {
 
 	beforeEach(async () => {
 		vi.clearAllMocks();
-		// Re-setup default mock behaviors after clearAllMocks
-		mockManager.login.mockResolvedValue({
-			did: "did:plc:testuser123",
-			pdsUri: "https://test.pds.example",
-		});
+		mockOAuthClient.restore.mockResolvedValue(mockSession);
+		mockSession.getTokenInfo.mockResolvedValue({ aud: "https://test.pds.example" });
 		client = new StandardSiteClient();
-		await client.login("alice.bsky.social", "app-password-123");
-	});
-
-	describe("login", () => {
-		it("resolves identity and logs in via CredentialManager", async () => {
-			const { resolveIdentity } = await import("../src/identity");
-			expect(resolveIdentity).toHaveBeenCalledWith("alice.bsky.social");
-			expect(mockManager.login).toHaveBeenCalledWith({
-				identifier: "alice.bsky.social",
-				password: "app-password-123",
-			});
-		});
-
-		it("exposes resolved did and pdsUrl", () => {
-			expect(client.did).toBe("did:plc:testuser123");
-			expect(client.pdsUrl).toBe("https://test.pds.example");
-		});
+		await client.restoreOAuthSession("did:plc:testuser123", { oauthSessions: {}, oauthStates: {} }, async () => {}, {});
 	});
 
 	describe("createDocument", () => {
