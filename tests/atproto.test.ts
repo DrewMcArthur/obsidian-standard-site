@@ -53,10 +53,21 @@ describe("StandardSiteClient", () => {
 
 	beforeEach(async () => {
 		vi.clearAllMocks();
+		mockSession.did = "did:plc:testuser123";
 		mockOAuthClient.restore.mockResolvedValue(mockSession);
 		mockSession.getTokenInfo.mockResolvedValue({ aud: "https://test.pds.example" });
 		client = new StandardSiteClient();
 		await client.restoreOAuthSession("did:plc:testuser123", { oauthSessions: {}, oauthStates: {} }, async () => {}, {});
+	});
+
+	describe("restoreOAuthSession", () => {
+		it("rejects an invalid DID returned by OAuth", async () => {
+			mockSession.did = "not-a-did";
+			const invalidClient = new StandardSiteClient();
+
+			await expect(invalidClient.restoreOAuthSession("did:plc:testuser123", { oauthSessions: {}, oauthStates: {} }, async () => {}, {}))
+				.rejects.toThrow("Invalid DID returned by ATProto OAuth");
+		});
 	});
 
 	describe("createDocument", () => {

@@ -1,6 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type StandardSitePlugin from "./main";
-import { DEFAULT_OAUTH_LOOPBACK_PORT, getOAuthClientId, getOAuthRedirectUri, type OAuthStoreData, type StoredOAuthState } from "./atproto";
+import { DEFAULT_OAUTH_LOOPBACK_PORT, getOAuthClientId, getOAuthRedirectUri, type OAuthStoreData, type StoredOAuthState } from "./oauth";
 import type { NodeSavedSession } from "@atproto/oauth-client-node";
 
 export interface StandardSiteSettings extends OAuthStoreData {

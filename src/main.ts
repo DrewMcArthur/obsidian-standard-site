@@ -4,7 +4,8 @@ import {
 	DEFAULT_SETTINGS,
 	type StandardSiteSettings,
 } from "./settings";
-import { StandardSiteClient, createOAuthClient, startOAuthLoginFlow } from "./atproto";
+import { StandardSiteClient } from "./atproto";
+import { createOAuthClient, startOAuthLoginFlow } from "./oauth";
 import { prepareNoteForPublish, extractRkeyFromUri } from "./publish";
 import { computeSyncDiff, type VaultNote, type PdsRecord } from "./sync";
 import { deriveDocumentPath } from "./paths";
